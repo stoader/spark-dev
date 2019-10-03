@@ -1,0 +1,249 @@
+Congratulations, you have deployed Spark Spotguide to Kubernetes! Your release is named {{ .Release.Name }}.
+
+> Please note that if security scan enabled for your cluster, running spark for the first time may take longer than usual!
+Please be patient.
+
+## Launch Spark Application from Spark Console
+
+[Open Spark Console](/pipeline/api/v1/orgs/{{ $.Values.banzaicloud.organization.id }}/clusters/{{ .Values.banzaicloud.cluster.id }}/proxy/api/v1/namespaces/{{ .Release.Namespace }}/services/{{ template "fullname" . }}:8090/proxy)
+
+Then submit an example spark application using the following command:
+
+```
+/opt/spark/bin/spark-submit \
+--master k8s://$KUBERNETES_SERVICE_HOST \
+--deploy-mode cluster \
+--conf spark.app.name=spark-example \
+--conf spark.kubernetes.driver.label.app=spark-example \
+--conf spark.kubernetes.executor.label.app=spark-example \
+--conf spark.executor.instances={{ .Values.banzaicloud.spark.executor.num }} \
+{{- if eq .Values.banzaicloud.interpreter "Scala" }}
+--class org.apache.spark.examples.SparkPi \
+local:///opt/spark/examples/target/scala-2.11/jars/spark-examples_2.11-{{ .Values.banzaicloud.spark.version }}.jar 5000
+{{- else if eq .Values.banzaicloud.interpreter "Python" }}
+--conf spark.kubernetes.pyspark.pythonVersion="{{ .Values.banzaicloud.pythonVersion }}" \
+--py-files local:///opt/spark/examples/src/main/python/pi.py \
+local:///opt/spark/examples/src/main/python/pi.py
+{{- else if eq .Values.banzaicloud.interpreter "R" }}
+local:///opt/spark/examples/src/main/r/dataframe.R
+{{- end }}
+
+```
+
+## Launch Spark Application from your local machine
+
+### Spark distribution
+
+To run spark submit from your machine you need a built spark distribution. To ease the process we prebuilt a spark for you.
+Please download it from here:
+
+{{- $sparkVersion := .Values.banzaicloud.spark.image.tag }}
+
+```
+curl https://s3-us-west-2.amazonaws.com/banzaicloud-spark-distro/spark-{{ .Values.banzaicloud.spark.version }}-bin-spark-{{$sparkVersion}}.tgz --output spark-{{ .Values.banzaicloud.spark.version }}-bin-spark-{{$sparkVersion}}.tgz
+tar -xzf spark-{{ .Values.banzaicloud.spark.version }}-bin-spark-{{$sparkVersion}}.tgz
+cd spark-{{ .Values.banzaicloud.spark.version }}-bin-spark-{{$sparkVersion}}/
+```
+
+### Spark Submit
+
+To launch `spark-submit` from outside of the cluster the Kubernetes config needs to be set properly. To do that run the following commands:
+
+### Get the Kubernetes config
+Download the cluster config from the cluster details page:
+{{- if .Values.banzaicloud.cluster.id }}
+[Cluster details]({{ $.Values.banzaicloud.organization.name }}/cluster/{{ .Values.banzaicloud.cluster.id }}/details)
+{{- end }}
+
+```
+export KUBECONFIG=<path to the file which contains the fetched config/downloaded before>
+```
+
+{{- if  eq .Values.banzaicloud.cluster.distribution "eks" }}
+In case of Amazon EKS a small authenticator program is required to be able to access the cluster. It can be installed using the following command:
+
+Using Go:
+```
+go get -u -v github.com/kubernetes-sigs/aws-iam-authenticator/cmd/aws-iam-authenticator
+```
+
+Using the prebuilt binary:
+
+Follow this documentation on Amazon how to get and install a prebuilt binary:
+https://docs.aws.amazon.com/eks/latest/userguide/getting-started.html
+
+Search for `To install aws-iam-authenticator for Amazon EKS`.
+
+{{- end }}
+
+Small tool which interacts with your Kubernetes cluster must be installed. Please follow the following page to install it https://kubernetes.io/docs/tasks/tools/install-kubectl/.
+
+{{- if .Values.historyServer.enabled }}
+
+{{- $cloudProvider := index .Values "spark" "spark-hs" "sparkEventLogStorage" "cloudProvider" }}
+
+{{- if  eq $cloudProvider "azure" }}
+Spark-submit requires your Azure <storageAccountKey secret> to be able to store event logs, you can find it in this secret below:
+
+- [StorageAccountKey secret]({{ $.Values.banzaicloud.organization.name }}/secret?name={{ .Values.banzaicloud.bucket.storageAccountName }}-key)
+
+{{- else if eq $cloudProvider "amazon" }}
+Spark-submit requires your Amazon <amazon access key/secret> to be able to store event logs, you can find it in this secret below:
+
+- [Amazon secret]({{ $.Values.banzaicloud.organization.name }}/secret?name={{ index .Values "spark" "spark-hs" "sparkEventLogStorage" "pipelineSecretName" }})
+
+{{- else if eq $cloudProvider "alibaba" }}
+Spark-submit requires your Alibaba <alibaba access key/secret> to be able to store event logs, you can find it in this secret below:
+
+- [Alibaba secret]({{ $.Values.banzaicloud.organization.name }}/secret?name={{ index .Values "spark" "spark-hs" "sparkEventLogStorage" "pipelineSecretName" }})
+
+{{- else if eq $cloudProvider "oracle" }}
+Spark-submit requires your Oracle <tenancy_ocid/user_ocid/api_key_fingerprint> to be able to store event logs, you can find it in this secret below:
+
+- [Oracle secret]({{ $.Values.banzaicloud.organization.name }}/secret?name={{ index .Values "spark" "spark-hs" "sparkEventLogStorage" "pipelineSecretName" }})
+
+{{- end}}
+
+{{- end}}
+
+Then submit an example spark application using the following command:
+
+```
+{{- if  eq (.Values.banzaicloud.cluster.distribution) "eks" }}
+AWS_ACCESS_KEY_ID=$(echo $KUBECONFIG | xargs cat | awk '/AWS_ACCESS_KEY_ID/ { getline; print $2 }') \
+AWS_SECRET_ACCESS_KEY=$(echo $KUBECONFIG | xargs cat | awk '/AWS_SECRET_ACCESS_KEY/ { getline; print $2 }') \
+{{- end}}
+bin/spark-submit \
+--master k8s://$(kubectl config view --minify | grep server | cut -f 2- -d ":" | tr -d " ") \
+--deploy-mode cluster \
+--conf spark.app.name=spark-example \
+--conf spark.kubernetes.driver.label.app=spark-example \
+--conf spark.kubernetes.executor.label.app=spark-example \
+--conf spark.executor.instances={{ .Values.banzaicloud.spark.executor.num }} \
+--conf spark.kubernetes.authenticate.driver.serviceAccountName=spark \
+--conf spark.local.dir=/tmp/spark-locals \
+--conf spark.kubernetes.docker.image.pullPolicy=Always \
+--conf spark.kubernetes.container.image={{ template "sparkImageName" . }} \
+--conf spark.kubernetes.namespace={{ .Release.Namespace }} \
+{{- if .Values.banzaicloud.security.enabled }}
+--conf spark.authenticate=true \
+--conf spark.network.crypto.enabled=true \
+--conf spark.io.encryption.enabled=true \
+{{- end }}
+{{- if .Values.spark.monitoring.enabled}}
+--conf spark.kubernetes.driver.secrets.spark-{{ include "repo-name" . }}=/opt/spark/conf/monitoring \
+--conf spark.kubernetes.executor.secrets.spark-{{ include "repo-name" . }}=/opt/spark/conf/monitoring \
+{{- end }}
+{{- if .Values.historyServer.enabled }}
+{{- $cloudProvider := index .Values "spark" "spark-hs" "sparkEventLogStorage" "cloudProvider" }}
+--conf spark.eventLog.enabled=true \
+{{- if  eq $cloudProvider "amazon" }}
+--conf spark.hadoop.fs.s3a.access.key=<amazon access key> \
+--conf spark.hadoop.fs.s3a.secret.key=<amazon access secret> \
+--conf spark.eventLog.dir="s3a://{{ index .Values "spark" "spark-hs" "sparkEventLogStorage" "logDirectory" }}//" \
+{{- else if eq $cloudProvider "google"}}
+--conf spark.eventLog.dir="gs://{{ index .Values "spark" "spark-hs" "sparkEventLogStorage" "logDirectory" }}/" \
+{{- else if eq $cloudProvider "alibaba"}}
+--conf spark.eventLog.dir="oss://{{ index .Values "spark" "spark-hs" "sparkEventLogStorage" "logDirectory" }}//" \
+--conf spark.hadoop.fs.oss.accessKeyId=<alibaba access key> \
+--conf spark.hadoop.fs.oss.accessKeySecret=<alibaba access secret> \
+--conf spark.hadoop.fs.oss.impl=org.apache.hadoop.fs.aliyun.oss.AliyunOSSFileSystem \
+--conf spark.hadoop.fs.oss.endpoint=oss-{{ .Values.banzaicloud.bucket.location }}.aliyuncs.com \
+{{- else if eq $cloudProvider "oracle"}}
+--conf spark.eventLog.dir="oci://{{ index .Values "spark" "spark-hs" "sparkEventLogStorage" "logDirectory" }}@{{ index .Values "spark" "spark-hs" "sparkEventLogStorage" "oracleNamespace" }}" \
+--conf spark.hadoop.fs.oci.client.hostname=https://objectstorage.{{ .Values.banzaicloud.bucket.location }}.oraclecloud.com \
+--conf spark.hadoop.fs.oci.client.auth.tenantId=<tenancy_ocid> \
+--conf spark.hadoop.fs.oci.client.auth.userId=<user_ocid> \
+--conf spark.hadoop.fs.oci.client.auth.fingerprint=<api_key_fingerprint> \
+--conf spark.hadoop.fs.oci.client.auth.pemfilepath=/opt/spark/conf/secret/api_key \
+--conf spark.kubernetes.driver.secrets.{{ index .Values "spark" "spark-hs" "sparkEventLogStorage" "secretName" }}=/opt/spark/conf/secret \
+--conf spark.kubernetes.executor.secrets.{{ index .Values "spark" "spark-hs" "sparkEventLogStorage" "secretName" }}=/opt/spark/conf/secret \
+{{- else if eq $cloudProvider "azure"}}
+--conf spark.hadoop.fs.azure.account.key.{{ .Values.banzaicloud.bucket.storageAccountName }}.blob.core.windows.net=<storageAccountKey secret> \
+{{- $logDir := index .Values "spark" "spark-hs" "sparkEventLogStorage" "logDirectory"}}
+--conf spark.eventLog.dir={{- printf "wasb://%s@%s.blob.core.windows.net" $logDir .Values.banzaicloud.bucket.storageAccountName }} \
+{{- end}}
+{{- else }}
+spark.eventLog.enabled=false
+{{- end}}
+{{- if .Values.spark.monitoring.enabled }}
+--conf spark.metrics.conf=/opt/spark/conf/monitoring/metrics.properties \
+{{- end}}
+{{- if eq .Values.banzaicloud.interpreter "Scala" }}
+--class org.apache.spark.examples.SparkPi \
+local:///opt/spark/examples/target/scala-2.11/jars/spark-examples_2.11-{{ .Values.banzaicloud.spark.version }}.jar 5000
+{{- else if eq .Values.banzaicloud.interpreter "Python" }}
+--conf spark.kubernetes.pyspark.pythonVersion="{{ .Values.banzaicloud.pythonVersion }}" \
+--py-files local:///opt/spark/examples/src/main/python/pi.py \
+local:///opt/spark/examples/src/main/python/pi.py
+{{- else if eq .Values.banzaicloud.interpreter "R" }}
+local:///opt/spark/examples/src/main/r/dataframe.R
+{{- end }}
+
+```
+
+Currently Spark on Kubernetes does not support uploading your application from your computer using `spark submit`, either your application must
+hosted in a remote location like s3 or http server.
+
+> Find more details on spark-submit options in the generated repository's [readme](https://github.com/{{ include "repo-full-name" . }}).
+
+{{- if .Values.historyServer.enabled }}
+### Spark History Server
+
+To access logs created by your spark job, we are using spark history server which can be accessed from here:
+
+{{ $serviceType := index .Values "spark" "spark-hs" "service" "type"}}
+{{ $hosts := index .Values "spark" "spark-hs" "ingress" "hosts" }}
+{{ if not (has "/" $hosts) }}
+{{ range $hosts }}
+- [{{ . }}](https://{{ . }})
+{{- end }}
+{{ else }}
+
+You can get the application URL by running this command:
+
+{{- if  eq .Values.banzaicloud.cluster.cloud "amazon" }}
+```
+echo https://$(kubectl get ing --namespace {{ .Release.Namespace }} -l app=spark-hs,release={{ .Release.Name }} -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}')
+```
+{{- else}}
+```
+echo https://$(kubectl get ing --namespace {{ .Release.Namespace }} -l app=spark-hs,release={{ .Release.Name }} -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')
+```
+{{- end}}
+{{- end}}
+
+- [User secret]({{ $.Values.banzaicloud.organization.name }}/secret?name={{ .Values.banzaicloud.secret.historyServer.name }})
+{{- end }}
+
+
+{{- if .Values.spark.monitoring.enabled}}
+
+### Monitoring
+
+The monitoring dashboard can be accessed on the following host:
+
+- [Grafana]({{ .Values.banzaicloud.organization.name }}/deployment?cluster={{ .Values.banzaicloud.cluster.name }}&releaseName=monitor&name=monitor)
+- [User secret]({{ $.Values.banzaicloud.organization.name }}/secret?name=cluster-{{ .Values.banzaicloud.cluster.id }}-grafana)
+
+{{- end }}
+
+{{- if .Values.banzaicloud.organization.name }}
+
+### CI/CD Pipeline
+
+Every time you make changes to the source code and update the `master` branch, the CI/CD pipeline will be triggered to reconfigure your spark cluster.
+
+[Go to CI/CD]({{ $.Values.banzaicloud.organization.name }}/cicd/{{ include "repo-name" . }})
+
+{{- end }}
+
+{{- if .Values.banzaicloud.organization.name }}
+
+### Secrets
+
+The following secrets were created as part of the spotguide:
+
+[Go to Secrets]({{ $.Values.banzaicloud.organization.name }}/secret?filter={{ include "repo-tag" . }})
+
+{{- end }}
